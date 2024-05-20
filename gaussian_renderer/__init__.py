@@ -207,6 +207,13 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     means2D = screenspace_points
     opacity = pc.get_opacity
 
+    # Check gaussians visible in a frustum
+    visible_gaussians = rasterizer.markVisible(pc.get_xyz)
+    # Find indices with True/1
+    num = len(torch.where(visible_gaussians == 1)[0])
+    print(f"Total Gaussians: {len(pc.get_xyz)}; Visible in frustum: {num}")
+    
+    # Transformer Codes
 
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
