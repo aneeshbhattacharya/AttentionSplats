@@ -1,6 +1,4 @@
 setuptools
-torch
-torchvision
 pytorch-lightning
 opencv-python
 imageio

@@ -1,0 +1,1 @@
+Namespace(data_device='cuda', eval=False, foundation_model='lseg', images='images', model_path='model_saves/VF3DGS_room0', resolution=0, sh_degree=3, source_path='/cephfs/feature-3dgs/DATASETS/room0_seq1', speedup=True, white_background=False)

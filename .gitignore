@@ -9,3 +9,5 @@ tensorboard_3d
 screenshots
 *.ckpt
 *.pth
+DATASETS
+encoders/lseg_encoder/demo_e200.ckpt

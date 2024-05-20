@@ -43,7 +43,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     viewpoint_stack = scene.getTrainCameras().copy()
     viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
     gt_feature_map = viewpoint_cam.semantic_feature.cuda()
-    feature_out_dim = gt_feature_map.shape[0]
+    feature_out_dim = gt_feature_map.shape[0] # GT feature shape -> L-Seg shape -> feature dim
 
     
     # speed up for SAM
@@ -71,20 +71,20 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
 
     for iteration in range(first_iter, opt.iterations + 1):
-        # if network_gui.conn == None:
-        #     network_gui.try_connect()
-        # while network_gui.conn != None:
-        #     try:
-        #         net_image_bytes = None
-        #         custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
-        #         if custom_cam != None:
-        #             net_image = render(custom_cam, gaussians, pipe, background, scaling_modifer)["render"]
-        #             net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
-        #         network_gui.send(net_image_bytes, dataset.source_path)
-        #         if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
-        #             break
-        #     except Exception as e:
-        #         network_gui.conn = None
+        if network_gui.conn == None:
+            network_gui.try_connect()
+        while network_gui.conn != None:
+            try:
+                net_image_bytes = None
+                custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
+                if custom_cam != None:
+                    net_image = render(custom_cam, gaussians, pipe, background, scaling_modifer)["render"]
+                    net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
+                network_gui.send(net_image_bytes, dataset.source_path)
+                if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
+                    break
+            except Exception as e:
+                network_gui.conn = None
 
         iter_start.record()
 
@@ -107,14 +107,96 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         feature_map, image, viewspace_point_tensor, visibility_filter, radii = render_pkg["feature_map"], render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         
+        # What is the dimension of L-Seg?
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
         gt_feature_map = viewpoint_cam.semantic_feature.cuda()
         feature_map = F.interpolate(feature_map.unsqueeze(0), size=(gt_feature_map.shape[1], gt_feature_map.shape[2]), mode='bilinear', align_corners=True).squeeze(0) 
+        
+        
+        '''
+        # What feature-3DGS are doing is; 
+        1. After rendering in lower dimension -> feature L-Seg//2 get image H,W,LSeg//2
+        2. They then upsample to the final L-Seg dimension using a CNN decoder
+
+        What we want to do is:
+        1. Find the Gaussians visible in viewing frustum 
+        2. Expand them to some feature size (L-Seg) using Transformer and attention -> N, 8 ; N, 512
+        3. Positional encoding is current xyz -> fourier transforme 
+        4. Rasterize them onto image plane and get H,W,L-Seg (H,W,512)
+
+
+        Easy way to find out is:
+        1. GET THE SCENE COLMAP
+        2. Train vanilla 3DGS
+        3. On the trained vanilla 3DGS, apply the logic of transformer and put some dummy loss and backprop.
+        If OOM then we need to adapt
+
+        Second method:
+        1. Find gaussians visible in viewing frustum
+        2. Voxelize the scene -> x,y,z//voxel_size * voxel_size -> voxel_positions (Criteria/resolution of voxelization) -> Scaffold 3DGS paper (Median) -> Median/2
+        3. Take all gaussians and find the appropriate voxel which they belong -> gauss.mean //voxel_size * voxel -> N, x,y,z -> voxel position of gaussians
+        4. Find unique voxel positions and index_id torch.unique () -> N,1 -> 1;3;2;6;
+        5. For all gaussians belonging to 1 voxel ID -> common feature = gauss_feat_1 + gauss_feat_2 ... // n
+        6. We will get num_unique_voxels, feature
+
+        7. Now apply transformer -> Make it tractible and expand shape -> feature -> 512
+        8. Recast this to appropriate shape: Gauss 1 -> voxel -1; N,feature; N[0] -> feature_1 New List -> [tensors hold]   
+        
+        9. Splat in 2D and apply losses as it is
+
+        # How to do segmentation?
+        Follow steps 1 to 8 
+        What we get: Num gaussians, feature (512) -> Just apply searching of CLIP feature etc.
+
+        Now Global context: 
+        1. Take all gaussians for entire scene
+        2. Voxelize in a larger resolution -> N_large
+        3. Now use a 3DCNN / Transformer OR BOTH (CNN in high resolution N_large = 10k, Transformer in coarse N_large 5k) ; N_large,8 -> N_large,1024 
+        4. N_Large, new_feature_dim (Output of our global model)
+        5. Transform this into a single vector which globally represents scene context -> max_pooling/avg_pooling -> 1, new_feature_dim # Idea from PointNet
+
+        # interesting idea:
+        1. Only update/backprop the global network after several iterations i.e every 10 epochs -> push gradients of all scenes back
+        2. EMA update
+        # Does this improve metrics?
+        
+        6. Now take local frustum method^
+        7. Follow steps 1 to 6
+        8. Now N, feature |cat| global_feature
+        9. Now follow 7-9
+
+        WHAT IS PERFORMANCE?
+
+        # What more improvements/hacks can we try?
+        1. Local Transformer -> MLP + Extrinsic -> 1,512 vector GLOBAL CLIP EMBED OF THAT IMAGE ??? (sort-of-distillation)
+            How does it make sense?
+            1. Local Transformer + Extrinsics -> Local image .... 2D -> Spatial reasoning by itself? -> CLIP
+
+        Zero-123 (Diffusion + R,t -> MLP(R,t) -> 128)
+            
+        Local_Transformer ----> intermediate_layer N, 128 ----> N, 512
+                                        -----------> MLP + Linear(Extrisic R,t -> 4,3 -> Linear) N, 128 |cat| 32 ---------> 1,512 <-> CLIP GLOBAL (auxilary obj)
+
+        2. Can we make the PSNR better?
+            PSNR -> Colors, spatial position, covarience 
+            We want to see if initially this improves PSNR (Hopefully yes)
+
+            Second exp:
+            1. Dump colors
+            2. Use a color MLP -> position + gaussian feature (8) -> RGB/SH
+            Making the embeddings more cohesive and forcing them to align to colors
+
+            Similarly we can check if rotation/scaling can also improve using MLPs
+            
+        3. Try using an MLP to estimate positional encodings for the features -> continuous representation of 3D space
+        '''
+        
         if dataset.speedup:
             feature_map = cnn_decoder(feature_map)
+
         Ll1_feature = l1_loss(feature_map, gt_feature_map) 
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + 1.0 * Ll1_feature 
 
@@ -252,7 +334,7 @@ if __name__ == "__main__":
     safe_state(args.quiet)
 
     # Start GUI server, configure and run training
-    # network_gui.init(args.ip, args.port)
+    network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
 
