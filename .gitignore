@@ -11,3 +11,4 @@ screenshots
 *.pth
 DATASETS
 encoders/lseg_encoder/demo_e200.ckpt
+model_saves
