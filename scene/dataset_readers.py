@@ -144,6 +144,7 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
+# Loading camera realted parameters from COLMAP OUTPUTS...
 def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
@@ -156,14 +157,21 @@ def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
         cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
     
+    # Main image directory....
     reading_dir = "images" if images == None else images
 
     if foundation_model =='sam':
         semantic_feature_dir = "sam_embeddings" 
+    
+    # setting up the name of teacher model...
     elif foundation_model =='lseg':
         semantic_feature_dir = "rgb_feature_langseg" 
-    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, 
-                                           images_folder=os.path.join(path, reading_dir), semantic_feature_folder=os.path.join(path, semantic_feature_dir))
+
+    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, 
+                                           cam_intrinsics=cam_intrinsics, 
+                                           images_folder=os.path.join(path, reading_dir), 
+                                           semantic_feature_folder=os.path.join(path, semantic_feature_dir))
+
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
     semantic_feature_dim = cam_infos[0].semantic_feature.shape[0]
 
@@ -191,6 +199,7 @@ def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
         pcd = fetchPly(ply_path)
     except:
         pcd = None
+        
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,
                            test_cameras=test_cam_infos,

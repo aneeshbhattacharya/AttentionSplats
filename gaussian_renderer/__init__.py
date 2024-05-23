@@ -211,7 +211,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     visible_gaussians = rasterizer.markVisible(pc.get_xyz)
     # Find indices with True/1
     num = len(torch.where(visible_gaussians == 1)[0])
-    print(f"Total Gaussians: {len(pc.get_xyz)}; Visible in frustum: {num}")
+    #print(f"Total Gaussians: {len(pc.get_xyz)}; Visible in frustum: {num}")
     
     # Transformer Codes
 
@@ -243,6 +243,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     else:
         colors_precomp = override_color
     semantic_feature = pc.get_semantic_feature
+    
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     rendered_image, feature_map, radii = rasterizer(

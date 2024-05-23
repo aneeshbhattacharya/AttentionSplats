@@ -139,6 +139,7 @@ class GaussianModel:
         features[:, 3:, 1:] = 0.0
         
         if speedup: # speed up for Segmentation
+            # Aggressive feature dimension reduction.....
             semantic_feature_size = int(semantic_feature_size/2)
         self._semantic_feature = torch.zeros(fused_point_cloud.shape[0], semantic_feature_size, 1).float().cuda() 
         
@@ -163,7 +164,6 @@ class GaussianModel:
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
         self._semantic_feature = nn.Parameter(self._semantic_feature.transpose(1, 2).contiguous().requires_grad_(True))
         
-
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")

@@ -102,12 +102,20 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         makedirs(edit_gt_feature_map_path, exist_ok=True)
     
     else:
+        # Setting up the save path.....
         render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
-        gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
-        feature_map_path = os.path.join(model_path, name, "ours_{}".format(iteration), "feature_map")
+        gts_path    = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
+        
+        # Feature maps to visualise via PCA
+        feature_map_path    = os.path.join(model_path, name, "ours_{}".format(iteration), "feature_map")
         gt_feature_map_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt_feature_map")
+
+        # Final Rendered featur map....
         saved_feature_path = os.path.join(model_path, name, "ours_{}".format(iteration), "saved_feature")
+
         #encoder_ckpt_path = os.path.join(model_path, "encoder_chkpnt{}.pth".format(iteration))
+
+        # speed up module, scene specific decoder....
         decoder_ckpt_path = os.path.join(model_path, "decoder_chkpnt{}.pth".format(iteration))
         
         if speedup:
@@ -117,12 +125,14 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
             cnn_decoder = CNN_decoder(feature_in_dim, feature_out_dim)
             cnn_decoder.load_state_dict(torch.load(decoder_ckpt_path))
         
+        # Making an image saving directory for renders....
         makedirs(render_path, exist_ok=True)
         makedirs(gts_path, exist_ok=True)
         makedirs(feature_map_path, exist_ok=True)
         makedirs(gt_feature_map_path, exist_ok=True)
         makedirs(saved_feature_path, exist_ok=True)
 
+    # Looping the viewing angles which are the same as training views...
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
         if edit_config != "no editing":
             render_pkg = render_edit(view, gaussians, pipeline, background, text_feature, edit_dict) 
@@ -142,27 +152,50 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
             Image.fromarray((gt_feature_map_vis.cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(edit_gt_feature_map_path, '{0:05d}'.format(idx) + "_feature_vis.png"))
 
         else:
-            # mlp encoder
+            # mlp encoder (main rendering equation)
+            og_image_name = view.image_name
             render_pkg = render(view, gaussians, pipeline, background) 
 
+            # getting the original viewed image...
             gt = view.original_image[0:3, :, :]
-            gt_feature_map = view.semantic_feature.cuda() 
-            torchvision.utils.save_image(render_pkg["render"], os.path.join(render_path, '{0:05d}'.format(idx) + ".png")) 
-            torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
+            # extracting the corresponding feature map...
+            gt_feature_map = view.semantic_feature.cuda()
+
+            # Saving the rendered image...
+            #torchvision.utils.save_image(render_pkg["render"], os.path.join(render_path, '{0:05d}'.format(idx) + ".png")) 
+            #torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
+
+            # UPDATED........
+            torchvision.utils.save_image(render_pkg["render"], os.path.join(render_path, og_image_name + ".png")) 
+            torchvision.utils.save_image(gt, os.path.join(gts_path, og_image_name + ".png"))
+
+
             # visualize feature map
             feature_map = render_pkg["feature_map"] 
-            feature_map = F.interpolate(feature_map.unsqueeze(0), size=(gt_feature_map.shape[1], gt_feature_map.shape[2]), mode='bilinear', align_corners=True).squeeze(0) ###
+            # Down-sampling the feature map....
+            feature_map = F.interpolate(feature_map.unsqueeze(0), 
+                                       size=(gt_feature_map.shape[1], gt_feature_map.shape[2]), 
+                                       mode='bilinear', 
+                                       align_corners=True).squeeze(0) ###
+
+            # Increasing channel dimensions to match the GT feature map                           
             if speedup:
                 feature_map = cnn_decoder(feature_map)
 
+            # PCA feature map save....
             feature_map_vis = feature_visualize_saving(feature_map)
-            Image.fromarray((feature_map_vis.cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(feature_map_path, '{0:05d}'.format(idx) + "_feature_vis.png"))
+            #Image.fromarray((feature_map_vis.cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(feature_map_path, '{0:05d}'.format(idx) + "_feature_vis.png"))
+            Image.fromarray((feature_map_vis.cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(feature_map_path, og_image_name + "_feature_vis.png"))
+            
+            # GT f-map...
             gt_feature_map_vis = feature_visualize_saving(gt_feature_map)
-            Image.fromarray((gt_feature_map_vis.cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(gt_feature_map_path, '{0:05d}'.format(idx) + "_feature_vis.png"))
+            #Image.fromarray((gt_feature_map_vis.cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(gt_feature_map_path, '{0:05d}'.format(idx) + "_feature_vis.png"))
+            Image.fromarray((gt_feature_map_vis.cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(gt_feature_map_path, og_image_name + "_feature_vis.png"))
 
-            # save feature map
+            # Save the main feature map
             feature_map = feature_map.cpu().numpy().astype(np.float16)
-            torch.save(torch.tensor(feature_map).half(), os.path.join(saved_feature_path, '{0:05d}'.format(idx) + "_fmap_CxHxW.pt"))
+            #torch.save(torch.tensor(feature_map).half(), os.path.join(saved_feature_path, '{0:05d}'.format(idx) + "_fmap_CxHxW.pt"))
+            torch.save(torch.tensor(feature_map).half(), os.path.join(saved_feature_path, og_image_name + "_fmap_CxHxW.pt"))
 
 
 def render_video(model_path, iteration, views, gaussians, pipeline, background, edit_config): ###
@@ -302,7 +335,6 @@ def render_novel_views(model_path, name, iteration, views, gaussians, pipeline, 
             torch.save(torch.tensor(feature_map).half(), os.path.join(saved_feature_path, '{0:05d}'.format(idx) + "_fmap_CxHxW.pt"))
 
 
-
 def render_novel_video(model_path, name, iteration, views, gaussians, pipeline, background, edit_config): 
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration))
     makedirs(render_path, exist_ok=True)
@@ -340,24 +372,69 @@ def render_novel_video(model_path, name, iteration, views, gaussians, pipeline, 
     final_video.release()
 
 
-def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, novel_view : bool, 
-                video : bool , edit_config: str, novel_video : bool, multi_interpolate : bool, num_views : int): 
+def render_sets(dataset : ModelParams, 
+                iteration : int, 
+                pipeline : PipelineParams, 
+                skip_train : bool, 
+                skip_test : bool, 
+                novel_view : bool, 
+                video : bool , 
+                edit_config: str, 
+                novel_video : bool, 
+                multi_interpolate : bool, 
+                num_views : int): 
+
+    # Inference......
     with torch.no_grad():
+
+        # Setting up the gaussians....
         gaussians = GaussianModel(dataset.sh_degree)
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
+
+        # Access Name of images....
+        #print(scene.train_cameras[1.0][0].image_name)
 
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
+
+
         if not skip_train:
-             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, edit_config, dataset.speedup)
+
+             render_set(dataset.model_path, 
+                        "train", 
+                        scene.loaded_iter, 
+                        scene.getTrainCameras(), 
+                        gaussians, 
+                        pipeline, 
+                        background, 
+                        edit_config, 
+                        dataset.speedup)
+
 
         if not skip_test:
-             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, edit_config, dataset.speedup)
+             render_set(dataset.model_path, 
+                        "test", 
+                        scene.loaded_iter, 
+                        scene.getTestCameras(), 
+                        gaussians, 
+                        pipeline, 
+                        background, 
+                        edit_config, 
+                        dataset.speedup)
 
         if novel_view:
-             render_novel_views(dataset.model_path, "novel_views", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, 
-                                edit_config, dataset.speedup, multi_interpolate, num_views)
+             render_novel_views(dataset.model_path, 
+                               "novel_views", 
+                               scene.loaded_iter, 
+                               scene.getTrainCameras(), 
+                               gaussians, 
+                               pipeline, 
+                               background, 
+                               edit_config, 
+                               dataset.speedup, 
+                               multi_interpolate, 
+                               num_views)
 
         if video:
              render_video(dataset.model_path, scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, edit_config)
@@ -386,5 +463,14 @@ if __name__ == "__main__":
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.novel_view, 
-                args.video, args.edit_config, args.novel_video, args.multi_interpolate, args.num_views) ###
+    render_sets(model.extract(args), 
+                args.iteration, 
+                pipeline.extract(args), 
+                args.skip_train, 
+                args.skip_test, 
+                args.novel_view, 
+                args.video, 
+                args.edit_config, 
+                args.novel_video, 
+                args.multi_interpolate, 
+                args.num_views) ###

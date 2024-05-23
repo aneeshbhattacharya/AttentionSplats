@@ -87,6 +87,7 @@ def calculate_iou(teacher, student, num_classes):
         union = np.logical_or(true_labels, predicted_labels)
         iou_score = np.sum(intersection) / np.sum(union)
         iou.append(iou_score)
+
     return np.nanmean(iou)  
 
 def calculate_iou_mask(gt, teacher, student, num_classes):
@@ -396,7 +397,14 @@ class FeatureImageFolderLoader(enc_ds.ADE20KSegmentation):#(torch.utils.data.Dat
             # print("!!!!!!!!!!!!!student_features!!!!!!!!!!!!!!", self.student_features)
         else:
             self.teacher_features = get_folder_features(teacher_feature_root)
+            print("$$$$$$$$$$$$$$$$$$$$$")
+            print(self.teacher_features[0])
+            print(self.teacher_features[1])
+            print(self.teacher_features[2])
+
+            print("$$$$$$$$$$$$$$$$$$$$$")
             # self.gt_labels_path = get_gt_label_train(gt_label_root)
+            
         self.images = get_folder_images(image_root)
         if len(self.student_features) == 0:
             raise(RuntimeError("Found 0 prediction features in subfolders of: \
@@ -476,7 +484,11 @@ def get_folder_images(img_folder):
 
 def get_feature_image_dataset(student_feature_path, teacher_feature_path, image_path, eval_mode, **kwargs):
     if os.path.isdir(student_feature_path) and os.path.isdir(teacher_feature_path) and os.path.isdir(image_path):
-        return FeatureImageFolderLoader(student_feature_path, teacher_feature_path, image_path, eval_mode, transform=kwargs["transform"])
+        return FeatureImageFolderLoader(student_feature_path, 
+                                        teacher_feature_path, 
+                                        image_path, 
+                                        eval_mode, 
+                                        transform=kwargs["transform"])
 
 
 def get_legend_patch(npimg, new_palette, labels):
@@ -522,6 +534,7 @@ def test(args):
     )
     labels = module.get_labels('ade20k')
     num_classes = len(labels)
+    print("Number of classes to be used : ",num_classes)
     input_transform = module.val_transform
 
     loader_kwargs = (
@@ -529,9 +542,11 @@ def test(args):
     )
 
     # feature dataset
-    testset = get_feature_image_dataset(
-        args.student_feature_dir, args.teacher_feature_dir, args.test_rgb_dir, args.eval_mode, transform=input_transform,
-    )
+    testset = get_feature_image_dataset(args.student_feature_dir, # rendered feature map
+                                        args.teacher_feature_dir, # L-seg teacher original feature map
+                                        args.test_rgb_dir,        # rendered images
+                                        args.eval_mode,           # Train/test mode
+                                        transform=input_transform,)
 
     test_data = data.DataLoader(
         testset,
@@ -594,17 +609,21 @@ def test(args):
 
     ###
     ########################################################################################
-    ################################## encode text feature #################################
+    ################################## CLIP encode text feature #################################
     text = ''
     labelset = []
+
+    # Custom labels provided.....
     if args.label_src != 'default':
         labelset = args.label_src.split(',')
     # print("############################################################### labelset: ", labelset)
+    
     if labelset == []:
         text = clip.tokenize(labels)
     else:
         text = clip.tokenize(args.label_src)
     
+    # Image Encoder...
     hooks = {
             "clip_vitl16_384": [5, 11, 17, 23],
             "clipRN50x16_vitl16_384": [5, 11, 17, 23],
@@ -617,12 +636,14 @@ def test(args):
         expand=False,
         exportable=False,
         hooks=hooks[args.backbone],
-        use_readout="project",
-        )
+        use_readout="project",)
     
     text = text.cuda() # text = text.to(x.device) # TODO: need use correct device
+    
+    # CLIP text encoder....
     text_feature = clip_pretrained.encode_text(text) # torch.Size([150, 512])
     #print("################################### text_feature: ", text_feature.shape)
+    # CLIP softmax scaling....
     logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07)).exp()
     # logit_scale = logit_scale.cuda() # logit_scale = logit_scale.to(x.device) # TODO: need use correct device
 
@@ -630,6 +651,8 @@ def test(args):
     count = 0
     accuracy_accum = 0
     iou_accum = 0
+
+
     # for i, (student_features, teacher_features, gt_label, images, dst) in enumerate(tbar):
     for i, (student_features, teacher_features, images, dst) in enumerate(tbar):
         
@@ -676,22 +699,30 @@ def test(args):
                         align_corners=True,
                     )[0] for teacher_feature in teacher_features]
             
-            ###
+
+            # Text class logits & feature maps dot products...
+            ### (rendered features....)[PER ELEMENT BATCH PREDICTION]
             pred_image_text_features = []
             for student_feature in student_features:
                 # student_feature = student_feature.permute(2, 0, 1)  ### do this only when evaluate 
                 feashape = student_feature.shape # (512, 360, 480)
                 print(feashape)
                 # feature = F.normalize(feature.float(), dim=0).half()
+                
+                # <<<<<<<<Computing COSINE SIMILARITIES>>>>>>>>>
+                # Flattening the spatial dimensions...
                 image_feature = student_feature.permute(1, 2, 0).reshape(-1, feashape[0]) # (172800, 512)
                 image_feature = image_feature / image_feature.norm(dim=-1, keepdim=True).to(torch.float32)
-                text_feature = text_feature / text_feature.norm(dim=-1, keepdim=True).to(torch.float32)
+                text_feature  = text_feature / text_feature.norm(dim=-1, keepdim=True).to(torch.float32)
 
 
                 text_feature = text_feature.to(image_feature.device) # (150, 512)
                 logit_scale = logit_scale.to(image_feature.device)
+
+                # Compute per-pixel classification on feature map...
                 logits_per_image = image_feature @ text_feature.t() # torch.Size([172800, 150]) logit_scale
                 logits_per_image = logits_per_image.view(feashape[1], feashape[2], -1).permute(2, 0, 1)
+
                 # print("################################### logits_per_image: ", logits_per_image.shape) # torch.Size([150, 360, 480])
                 pred_image_text_feature = logits_per_image[None] # torch.Size([1, 150, 360, 480])
                 pred_image_text_features.append(pred_image_text_feature)
@@ -728,15 +759,11 @@ def test(args):
             #     testset.make_pred(torch.max(feature, 1)[1].cpu().numpy())
             #     for feature in features
             # ]
-            pred_predicts = [
-                testset.make_pred(torch.max(pred_image_text_feature, 1)[1].cpu().numpy())
-                for pred_image_text_feature in pred_image_text_features
-            ]
+            pred_predicts = [testset.make_pred(torch.max(pred_image_text_feature, 1)[1].cpu().numpy())
+                             for pred_image_text_feature in pred_image_text_features]
         
-            gt_predicts = [
-                testset.make_pred(torch.max(gt_image_text_feature, 1)[1].cpu().numpy())
-                for gt_image_text_feature in gt_image_text_features
-            ]
+            gt_predicts = [testset.make_pred(torch.max(gt_image_text_feature, 1)[1].cpu().numpy())
+                            for gt_image_text_feature in gt_image_text_features]
 
             print("done makepred", start - time.time())
             # output_features = [o.cpu().numpy().astype(np.float16) for o in output_features]
@@ -748,7 +775,9 @@ def test(args):
         for pred_predict, gt_predict, impathp in zip(pred_predicts, gt_predicts, dst):
             # prediction and visualize masks
             pred_mask = utils.get_mask_pallete(pred_predict - 1, 'detail')
+            p_m_s = pred_mask
             gt_mask = utils.get_mask_pallete(gt_predict - 1, 'detail')
+            g_m_s = gt_mask
             # Visualize accumulated predictions
             pred_mask = torch.tensor(np.array(pred_mask.convert("RGB"), "f")) / 255.0
             gt_mask = torch.tensor(np.array(gt_mask.convert("RGB"), "f")) / 255.0
@@ -766,14 +795,14 @@ def test(args):
             gtplabel = np.unique(gt_predict)
             predpred = np.unique(pred_predict)
             # print(dd)
-            print(gtplabel)
-            print(predpred)
+            #print(gtplabel)
+            #print(predpred)
 
-            print(pred_predict.shape)
+            #print(pred_predict.shape)
             # print(gt_label.shape)
-            print(gt_predict.shape)
+            #print(gt_predict.shape)
             ###################################### manually change labels here
-            print("Shape of pred_predict:", pred_predict.shape)
+            #print("Shape of pred_predict:", pred_predict.shape)
             # for j in range(gt_label.shape[1]):
             #     for k in range(gt_label.shape[2]):
             #         for element in gt_label:
@@ -785,6 +814,7 @@ def test(args):
             #             if element[j][k] == 58:  #pillow to cushion
             #                 element[j][k] = 40
 
+            # <<<<<<<<<<<<<Manual Label remaping to get unambiguous scores>>>>>>>>>>>
             for j in range(pred_predict.shape[1]):
                 for k in range(pred_predict.shape[2]):
                     for element in (pred_predict, gt_predict):
@@ -799,6 +829,7 @@ def test(args):
             #             # floor rug bag building tree= floor
             #             if element[0][j][k] == 29 or element[0][j][k] == 116 or element[0][j][k] == 5:
             #                 element[0][j][k] = 4
+            
             ############## resize to the same size as NeRF
             gt_predict = torch.from_numpy(gt_predict).float()
             gt_predict = F.interpolate(gt_predict.unsqueeze(0), size=(119, 159), mode='nearest').squeeze(0)
@@ -814,20 +845,88 @@ def test(args):
 
 
 
-
+            # <<<<<<<<PREDICTION ACCURACY>>>>>>>>>>>>>
             accuracy = calculate_accuracy(gt_predict, pred_predict)
             # accuracy_mask = calculate_accuracy_mask(gt_label, gt_predict, pred_predict, i)
+
+            # <<<<<<<<Mean IOU computation>>>>>
+            # IOU using top 7 classes.........
             iou = calculate_iou(gt_predict, pred_predict, 7)
             # iou_mask = calculate_iou_mask(gt_label, gt_predict, pred_predict, 7)
 
-            print("teacher", gt_predict)
-            print(gt_predict.shape)
-            print("student", pred_predict)
+            # saving predictions....
+
+
+            #print("teacher", gt_predict)
+            #print(gt_predict.shape)
+            #print("student", pred_predict)
             # print("gt", gt_label)
+
             accuracy_accum += accuracy
             iou_accum += iou
             # print(f"for the {i}th image, the accuracy is {accuracy}, accuracy with mask is {accuracy_mask}, iou is {iou}, iou with mask is{iou_mask}")
             print(f"for the {i}th image, the accuracy is {accuracy}, iou is {iou}")
+            if (accuracy < 0.7) | (iou < 0.5):
+                print("Saving mask of Image index : ",i)
+                #g_m_s.save("./low_scores/gt_room_0_{}.png".format(i))
+                #p_m_s.save("./low_scores/pred_room_0_{}.png".format(i))
+
+                seg, patches = get_legend_patch(pred_predict - 1, adepallete, labels)
+                seg = seg.convert("RGBA")
+                plt.figure()
+                plt.axis('off')
+                plt.imshow(seg)
+                #plt.legend(handles=patches)
+                plt.legend(handles=patches, prop={'size': 8}, ncol=4)
+
+                # Save 3 Class labelled mask with legend...
+                plt.savefig('./low_scores/pred_room_0_{}.png'.format(i), format="png", dpi=300, bbox_inches="tight")
+                plt.clf()
+                plt.close()
+
+                seg, patches = get_legend_patch(gt_predict - 1, adepallete, labels)
+                seg = seg.convert("RGBA")
+                plt.figure()
+                plt.axis('off')
+                plt.imshow(seg)
+                #plt.legend(handles=patches)
+                plt.legend(handles=patches, prop={'size': 8}, ncol=4)
+
+                # Save 3 Class labelled mask with legend...
+                plt.savefig('./low_scores/gt_room_0_{}.png'.format(i), format="png", dpi=300, bbox_inches="tight")
+                plt.clf()
+                plt.close()
+
+      
+            if (accuracy > 0.7) & (iou > 0.7):
+                seg, patches = get_legend_patch(pred_predict - 1, adepallete, labels)
+                seg = seg.convert("RGBA")
+                plt.figure()
+                plt.axis('off')
+                plt.imshow(seg)
+                #plt.legend(handles=patches)
+                plt.legend(handles=patches, prop={'size': 8}, ncol=4)
+
+                # Save 3 Class labelled mask with legend...
+                plt.savefig('./high_scores/pred_room_0_{}.png'.format(i), format="png", dpi=300, bbox_inches="tight")
+                plt.clf()
+                plt.close()
+
+                seg, patches = get_legend_patch(gt_predict - 1, adepallete, labels)
+                seg = seg.convert("RGBA")
+                plt.figure()
+                plt.axis('off')
+                plt.imshow(seg)
+                #plt.legend(handles=patches)
+                plt.legend(handles=patches, prop={'size': 8}, ncol=4)
+
+                # Save 3 Class labelled mask with legend...
+                plt.savefig('./high_scores/gt_room_0_{}.png'.format(i), format="png", dpi=300, bbox_inches="tight")
+                plt.clf()
+                plt.close()
+            
+
+
 
             print(f'the average accuracy is {accuracy_accum/count}, average iou is {iou_accum/count}')
             # print("?????????????????????????????????????????????????????????????????????", mask_pred.shape)   #tensors([360, 480, 3])

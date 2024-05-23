@@ -253,6 +253,7 @@ def get_legend_patch(npimg, new_palette, labels):
 
 def test(args):
 
+    # Creation of the LSeg module to produce feature targets....
     module = LSegModule.load_from_checkpoint(
         checkpoint_path=args.weights,
         data_path=args.data_path,
@@ -277,8 +278,9 @@ def test(args):
         arch_option=args.arch_option,
         strict=args.strict,
         block_depth=args.block_depth,
-        activation=args.activation,
-    )
+        activation=args.activation,)
+    
+    # Extracting prediction labels....
     labels = module.get_labels('ade20k')
     input_transform = module.val_transform
     # num_classes = module.num_classes
@@ -290,6 +292,9 @@ def test(args):
     # dataset
     print("test rgb dir", args.test_rgb_dir)
     # testset = get_dataset(
+
+    # Test RGB dir holds the frames generated via some camera trajectory
+    # or this could be the ego--motion of some agent.....
     testset = get_original_dataset(
         # "/mnt/nfs-mnj-archive-02/user/sosk/neural_semantic_field/semantic_nerf/Replica_Dataset/room_0/Sequence_1/rgb",
         #"/mnt/nfs-mnj-archive-02/user/sosk/neural_semantic_field/semantic_nerf/Replica_Dataset/office_0/Sequence_1/rgb",
@@ -299,13 +304,14 @@ def test(args):
         #root=args.data_path,
         #split="val",
         #mode="testval" if args.eval else "test",  # test returns (image, path), the others returns (image, GTmask)
-        transform=input_transform,
-    )
+        transform=input_transform,)
 
     # dataloader
     loader_kwargs = (
         {"num_workers": args.workers, "pin_memory": True} if args.cuda else {}
     )
+    
+    # Building the dataloader......
     test_data = data.DataLoader(
         testset,
         batch_size=args.test_batch_size,
@@ -320,6 +326,7 @@ def test(args):
     else:
         model = module
 
+    # Performing inference on L-seg....
     model = model.eval()
     model = model.cpu()
 
@@ -350,38 +357,49 @@ def test(args):
     # scales = np.linspace(0.75, args.resize_max, 7)
     # scales = [0.75, 1.0, 1.25]
     # scales = [0.75, 1.0, 1.25, 1.5, 1.75]
+    
+    # L-seg multiscaling...
     scales = [0.75, 1.0, 1.25, 1.75]
     print("scales", scales)
     print("test rgb dir", args.test_rgb_dir)
-    print("outdir", args.outdir)
-    evaluator = LSeg_MultiEvalModule(
-        model, num_classes, scales=scales, flip=True
-    ).cuda()
+    print("outdir", args.outdir) # directory to save....
+
+    # L-seg internally handles this multi-scaling (<<<<<READ THIS LATER CAN PROVIDE A SCOPE OF IMPROVEMENT>>>>>>)
+    evaluator = LSeg_MultiEvalModule(model, num_classes, scales=scales, flip=True).cuda()
     evaluator.eval()
 
+    # Metric computed on 150 labels...
     metric = utils.SegmentationMetric(testset.num_class)
     tbar = tqdm(test_data)
 
     f = open("log_test_{}_{}.txt".format(args.jobname, args.dataset), "a+")
+
+    # Computing IoU per-class...
     per_class_iou = np.zeros(testset.num_class)
-    print(testset.num_class)
+    print("Print Number of classes : ",testset.num_class)
     cnt = 0
 
+    # Replica dataset frames sampling....
     if "Replica_Dataset" in args.test_rgb_dir:
         print(args.data_path, "is Replica_Dataset. So, skip some frames.")
         total_num = 900
         step = 5
+        # Building Train and test split...
         train_ids = list(range(0, total_num, step))
         test_ids = [x+step//2 for x in train_ids]
+        # 180 images..... (take the top 80 images eh ????)
         assert len(testset) == total_num, (len(testset), total_num)
         assert args.test_batch_size == 1, args.test_batch_size
 
-    # output folder
+    # Building  output folder
     # outdir = "outdir_ours"
     outdir = args.outdir
     if not os.path.exists(outdir):
         os.makedirs(outdir)
+    
+    # Replica Dataset has different HPams....
     if "Replica_Dataset" in args.test_rgb_dir:
+        # NOTE 1 : Run the experiment on lower resolution.....
         w, h = 320, 240
     elif "scannnet" in args.test_rgb_dir:
         w, h = 320, 240
@@ -393,7 +411,10 @@ def test(args):
     print("scales", scales)
     print("test rgb dir", args.test_rgb_dir)
     print("outdir", args.outdir)
+
     for i, (image, dst) in enumerate(tbar):
+
+        # Saving dummy values for non-id elements...
         """
         if "Replica_Dataset" in args.test_rgb_dir and not (i in train_ids or i in test_ids):
             impath = dst[0]
@@ -421,8 +442,11 @@ def test(args):
                         align_corners=True,
                     )[0] for img in image]
                 print(image[0].shape)
+            
+            # Multiscaling inference...
             outputs = evaluator.parallel_forward(image)
             print(image[0].shape, "image.shape")
+
             print("start pred")
             start = time.time()
             output_features = evaluator.parallel_forward(image, return_feature=True)
@@ -430,6 +454,7 @@ def test(args):
             # print(type(outputs), type(output_features))
             print("done pred", start - time.time())
             # list
+
             print("start make_pred")
             start = time.time()
             predicts = [
@@ -439,11 +464,14 @@ def test(args):
             print("done makepred", start - time.time())
             # output_features = [o.cpu().numpy().astype(np.float16) for o in output_features]
 
+        # Building the predicted mask....
         for predict, impath, img, fmap in zip(predicts, dst, image, output_features):
             # prediction mask
             # mask = utils.get_mask_pallete(predict - 1, args.dataset)
             mask = utils.get_mask_pallete(predict - 1, 'detail')
             outname = os.path.splitext(impath)[0] + ".png"
+
+            # Save 1 : Predicted Segmentation Mask for the input image.....
             mask.save(os.path.join(outdir, outname))
 
             # vis from accumulation of prediction
@@ -454,6 +482,8 @@ def test(args):
             vis2 = vis_img * 0.4 + mask * 0.6
             vis3 = mask
             vis = torch.cat([vis1, vis2, vis3], dim=1)
+
+            # Save 2 : Final mask overlapped over each other....
             Image.fromarray((vis.cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(outdir, outname + "_vis.png"))
 
             # new_palette = get_new_pallete(len(labels))
@@ -466,6 +496,8 @@ def test(args):
             plt.imshow(seg)
             #plt.legend(handles=patches)
             plt.legend(handles=patches, prop={'size': 8}, ncol=4)
+
+            # Save 3 Class labelled mask with legend...
             plt.savefig(os.path.join(outdir, outname + "_legend.png"), format="png", dpi=300, bbox_inches="tight")
             plt.clf()
             plt.close()
@@ -475,7 +507,8 @@ def test(args):
             #print(fmap.shape, h, w)
             start = time.time()
             ###
-            # save unnormalized image feature
+
+            # Save 4 unnormalized image feature
             unnormalized_fmap = fmap[0]  # [512, h, w]
             unnormalized_fmap = unnormalized_fmap.cpu().numpy().astype(np.float16)
             torch.save(torch.tensor(unnormalized_fmap).half(), os.path.join(outdir, os.path.splitext(impath)[0] + "_fmap_CxHxW.pt"))
@@ -500,6 +533,8 @@ def test(args):
                 feature_pca_postprocess_div = (q99 - q1)
                 print(q1, q99)
                 del f_samples
+
+                # SINGLE SAVE pca visualisation of features....
                 torch.save({"pca": pca, "feature_pca_mean": feature_pca_mean, "feature_pca_components": feature_pca_components,
                             "feature_pca_postprocess_sub": feature_pca_postprocess_sub, "feature_pca_postprocess_div": feature_pca_postprocess_div},
                            os.path.join(outdir, "pca_dict.pt"))
@@ -509,6 +544,8 @@ def test(args):
             vis_feature = (fmap.permute(0, 2, 3, 1).reshape(-1, fmap.shape[1]) - feature_pca_mean[None, :]) @ feature_pca_components.T
             vis_feature = (vis_feature - feature_pca_postprocess_sub) / feature_pca_postprocess_div
             vis_feature = vis_feature.clamp(0.0, 1.0).float().reshape((fmap.shape[2], fmap.shape[3], 3)).cpu()
+           
+            # Save 5 FEATURE visualisation....
             Image.fromarray((vis_feature.cpu().numpy() * 255).astype(np.uint8)).save(os.path.join(outdir, outname + "_feature_vis.png"))
             #print(time.time() - start)
             #print("done imgsave")
@@ -547,4 +584,6 @@ if __name__ == "__main__":
     args = Options().parse()
     torch.manual_seed(args.seed)
     args.test_batch_size = torch.cuda.device_count() 
+
+    # Run Feature extraction for training.....
     test(args)
