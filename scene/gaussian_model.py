@@ -58,6 +58,8 @@ class GaussianModel:
         self.spatial_lr_scale = 0
         self.setup_functions()
         self._semantic_feature = torch.empty(0) 
+        self.voxel_size = -1
+        self.ratio = 1
 
     def capture(self):
         return (
@@ -132,6 +134,16 @@ class GaussianModel:
 
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float, semantic_feature_size : int, speedup: bool):
         self.spatial_lr_scale = spatial_lr_scale
+        
+        points = pcd.points[::self.ratio]
+
+        if self.voxel_size <= 0:
+            init_points = torch.tensor(points).float().cuda()
+            init_dist = distCUDA2(init_points).float().cuda()
+            median_dist, _ = torch.kthvalue(init_dist, int(init_dist.shape[0]*0.5))
+            self.voxel_size = median_dist.item()
+        
+        
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()

@@ -13,7 +13,7 @@ import os
 import torch
 from random import randint
 from utils.loss_utils import l1_loss, ssim, tv_loss 
-from gaussian_renderer import render, network_gui
+from gaussian_renderer import render_with_local_transformer, network_gui
 import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
@@ -22,7 +22,7 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
-from gaussian_renderer import local_transformer.LocalTransformerOperations as LocalTransformer
+from gaussian_renderer.local_transformer import LocalTransformerOperations
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -36,10 +36,25 @@ from models.semantic_dataloader import VariableSizeDataset
 from torch.utils.data import DataLoader
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+    
+    transformer_args = {
+        "d_model": 256,
+        "nhead": 4,
+        "dim_feedforward": 512,
+        "dropout": 0.1,
+        "num_layers": 4,
+        "use_learnable": True,
+        "multi_res_dimension_in_transformer_pos_encode": 4,
+        "multi_res_in_delta_network": 6,
+        "voxel_size": 0.01
+    }
+    
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
+    
+    print("Median Voxel Size is: ", gaussians.voxel_size)
 
     # 2D semantic feature map CNN decoder
     viewpoint_stack = scene.getTrainCameras().copy()
@@ -47,6 +62,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     gt_feature_map = viewpoint_cam.semantic_feature.cuda()
     feature_out_dim = gt_feature_map.shape[0]
 
+    
+    # Initilize local transformer ops
+    local_transformer = LocalTransformerOperations(transformer_args).cuda()
+    local_transformer_optimizer = torch.optim.Adam(local_transformer.parameters(), lr=0.0001)
     
     # speed up for SAM
     if dataset.speedup:
@@ -104,7 +123,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
-        render_pkg = render(viewpoint_cam, gaussians, pipe, background)
+        render_pkg = render_with_local_transformer(viewpoint_cam, gaussians, pipe, background, local_transformer)
         
 
         feature_map, image, viewspace_point_tensor, visibility_filter, radii = render_pkg["feature_map"], render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
@@ -133,13 +152,20 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.close()
 
             # Log and save
-            training_report(tb_writer, iteration, Ll1, Ll1_feature, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background)) 
+            training_report(tb_writer, iteration, Ll1, Ll1_feature, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render_with_local_transformer, (pipe, background, local_transformer)) 
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
                 print("\n[ITER {}] Saving feature decoder ckpt".format(iteration))
+                
                 if dataset.speedup:
                     torch.save(cnn_decoder.state_dict(), scene.model_path + "/decoder_chkpnt" + str(iteration) + ".pth")
+                    
+                print("\n[ITER {}] Saving Checkpoint".format(iteration))
+                torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+                
+                print("Saving Local Transformer Stuff ... ")
+                torch.save(local_transformer.state_dict(), scene.model_path + "/local_transformer_chkpnt" + str(iteration) + ".pth")
   
 
             # Densification
@@ -163,6 +189,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if dataset.speedup:
                     cnn_decoder_optimizer.step()
                     cnn_decoder_optimizer.zero_grad(set_to_none = True)
+                    
+                local_transformer_optimizer.step()
+                local_transformer_optimizer.zero_grad(set_to_none = True)
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
@@ -241,7 +270,7 @@ if __name__ == "__main__":
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[1, 7_000, 30_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)

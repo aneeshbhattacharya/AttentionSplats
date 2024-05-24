@@ -13,18 +13,6 @@ Make a local transformer
 Then make a lightweight 2 layer MLP which takes in the features and position (pos encoded) and makes a delta transformation to the features i.e final_features = transformer_features + MLP features (to perturb the features approproately)
 '''
 
-transformer_args = {
-    "d_model": 256,
-    "nhead": 4,
-    "dim_feedforward": 512,
-    "dropout": 0.1,
-    "num_layers": 4,
-    "use_learnable": True,
-    "multi_res_dimension_in_transformer_pos_encode": 4,
-    "multi_res_in_delta_network": 6,
-    "voxel_size": 0.1
-}
-
 class Embedder:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
@@ -84,7 +72,8 @@ class LocalTransformerNetwork(nn.Module):
             d_model= transformer_args['d_model'],
             nhead= transformer_args['nhead'],
             dim_feedforward= transformer_args['dim_feedforward'],
-            dropout= transformer_args['dropout']
+            dropout= transformer_args['dropout'],
+            batch_first=True
         )
         
         self.transformer_encoder = nn.TransformerEncoder(
@@ -139,12 +128,14 @@ class PositionalEncodingMLP(nn.Module): # This is MLP for Transformer positional
             nn.Dropout(0.1),
             nn.Linear(transformer_args["d_model"], transformer_args["d_model"])
         )
+        
+        self.transformer_args=transformer_args
     
     def forward(self,x):
         
         x_out = self.embedder(x)
     
-        if transformer_args["use_learnable"]:
+        if self.transformer_args["use_learnable"]:
             x_out = self.module(x_out)    # Makes this to d_model dimension     
         
         return x_out
@@ -163,7 +154,7 @@ class LocalTransformerOperations(nn.Module):
     7. Put the correct feature back to the original positions
     '''
     
-    def __init__(self) -> None: # pos encode MLP will be common across local and global operators
+    def __init__(self, transformer_args) -> None: # pos encode MLP will be common across local and global operators
         super().__init__()
         
         self.voxel_size = transformer_args["voxel_size"] # We can get this variable from 3dgs states like distance bw each gaussian -> 10th %tile or lesser? ; For coarse grid we can go 50%tile for more?
@@ -192,9 +183,10 @@ class LocalTransformerOperations(nn.Module):
         voxelized_positions, _, unique_voxels, inverse_indices = self.voxelize_sample(gaussian_centres) # Unique voxel gives the position in xyz space that holds the voxels
         aggregated_features = torch.zeros(unique_voxels.shape[0], gaussian_features.shape[-1]).to(gaussian_features.device) # N, f
 
-        print("Aggregating features ...")
+        # print("Aggregating features ...")
 
-        for idx, unique_voxel_position in tqdm(enumerate(unique_voxels), total=len(unique_voxels)):
+        # for idx, unique_voxel_position in tqdm(enumerate(unique_voxels), total=len(unique_voxels)):
+        for idx, unique_voxel_position in enumerate(unique_voxels):
         
             matching_indices = self.find_matching_rows(voxelized_positions,unique_voxel_position)
             features_to_aggregate = gaussian_features[matching_indices]
@@ -210,27 +202,41 @@ class LocalTransformerOperations(nn.Module):
         
         recasted_features = torch.zeros(gaussian_centres.shape[0], transformed_features.shape[-1]).to(transformed_features.device)
         
-        print("Recasting features ...")
+        # print("Recasting features ...")
         # inverse indices holds which idx of unique voxel has to populate which id of the recasted feature
-        for idx, idx_to_recast in tqdm(enumerate(inverse_indices), total=len(inverse_indices)):
+        # for idx, idx_to_recast in tqdm(enumerate(inverse_indices), total=len(inverse_indices)):
+        for idx, idx_to_recast in enumerate(inverse_indices):
             recasted_features[idx] = transformed_features[idx_to_recast]
             
         return recasted_features          
     
     def forward(self, gaussian_centres, gaussian_features):
+        
+        
+        # print(f"Gaussian features shape: {gaussian_features.shape}")
+        
         aggregated_stuff, inv_indices, unique_voxel_positions = self.create_feature_as_transformer_input(gaussian_centres, gaussian_features)
+        
+        # print(f"Aggregated feature shape: {aggregated_stuff.shape}; Gaussian centres shape: {gaussian_centres.shape}")
         
         # This aggregated_stuff needs positional encoding
         positional_encoding = self.pos_encode_mlp(unique_voxel_positions) # this will give a learnable positional encoding using the MLP
-        transformer_op = self.transformer_model(aggregated_stuff, positional_encoding)
         
-        recasted_features = self.recast_features_back(gaussian_centres, transformer_op, inv_indices)
+        # print(f"Positional encoding shape: {positional_encoding.shape}")
+        
+        transformer_op = self.transformer_model(aggregated_stuff.unsqueeze(0), positional_encoding.unsqueeze(0)) # 1,N,f
+        
+        recasted_features = self.recast_features_back(gaussian_centres, transformer_op.squeeze(0), inv_indices)
+        
+        # print(f"Recasted feature shape: {recasted_features.shape}")
         
         mlp_delta_output = self.delta_mlp(recasted_features, gaussian_centres) # Learns the perturbation for each gaussian feature; in: N, f -> N,f
         
         final_features = recasted_features + mlp_delta_output
         
-        return final_features
+        # print(f"Final feature shape: {final_features.shape}")
+        
+        return final_features # N, 256
         
         
 '''
@@ -313,18 +319,30 @@ if __name__ == "__main__":
     # print(embedded_data.shape)
     # print(embedded_data)
     
-    # transformer = LocalTransformerNetwork(transformer_args).cuda()
-    # ppe_mlp = PositionalEncodingMLP(transformer_args).cuda()
+    transformer_args = {
+        "d_model": 256,
+        "nhead": 4,
+        "dim_feedforward": 512,
+        "dropout": 0.1,
+        "num_layers": 4,
+        "use_learnable": True,
+        "multi_res_dimension_in_transformer_pos_encode": 4,
+        "multi_res_in_delta_network": 6,
+        "voxel_size": 0.1
+    }
     
-    # positions = torch.rand(10_000,3).cuda()
+    transformer = LocalTransformerNetwork(transformer_args).cuda()
+    ppe_mlp = PositionalEncodingMLP(transformer_args).cuda()
     
-    # positional_vectors = ppe_mlp(positions)
+    positions = torch.rand(10_000,3).cuda()
+    
+    positional_vectors = ppe_mlp(positions).unsqueeze(0)
     # print(positional_vectors.shape)
     
-    # data = torch.rand(10_000, 256).cuda()
+    data = torch.rand(10_000, 256).cuda().unsqueeze(0)
     
-    # transformer_output = transformer(data, positional_vectors)
-    # print(transformer_output.shape)
+    transformer_output = transformer(data, positional_vectors)
+    print(transformer_output.shape)
     
     # mlp_perturb = LocalMLPDelta(transformer_args).cuda()
     # op = mlp_perturb(transformer_output, positions)
@@ -338,3 +356,4 @@ if __name__ == "__main__":
     # op = local_operation(gaussian_centres, gaussian_features)
     
     # print(op.shape)
+    pass
