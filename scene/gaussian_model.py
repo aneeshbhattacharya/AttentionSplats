@@ -151,7 +151,8 @@ class GaussianModel:
         features[:, 3:, 1:] = 0.0
         
         if speedup: # speed up for Segmentation
-            semantic_feature_size = int(semantic_feature_size/2)
+            # semantic_feature_size = int(semantic_feature_size/2)
+            semantic_feature_size = int(semantic_feature_size/32)
         self._semantic_feature = torch.zeros(fused_point_cloud.shape[0], semantic_feature_size, 1).float().cuda() 
         
 

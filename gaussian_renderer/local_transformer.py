@@ -92,10 +92,10 @@ class LocalMLPDelta(nn.Module):
     def __init__(self, transformer_args): # This module always uses the hard coded fourier frequencies
         super().__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(transformer_args["d_model"] + transformer_args["multi_res_in_delta_network"]*2*3+3, transformer_args["d_model"]),
+            nn.Linear(transformer_args["d_model"] + transformer_args["multi_res_in_delta_network"]*2*3+3, transformer_args["expand_to_dim"]),
             nn.LeakyReLU(),
             nn.Dropout(0.1),
-            nn.Linear(transformer_args["d_model"], transformer_args["d_model"])
+            nn.Linear(transformer_args["expand_to_dim"], transformer_args["expand_to_dim"])
         ) 
         
         self.embedder, _ = get_embedder(transformer_args["multi_res_in_delta_network"],3)

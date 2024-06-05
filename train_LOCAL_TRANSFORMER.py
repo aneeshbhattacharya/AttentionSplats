@@ -38,15 +38,16 @@ from torch.utils.data import DataLoader
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     
     transformer_args = {
-        "d_model": 256,
+        "d_model": 64,
         "nhead": 4,
         "dim_feedforward": 512,
         "dropout": 0.1,
-        "num_layers": 4,
+        "num_layers": 3,
         "use_learnable": True,
         "multi_res_dimension_in_transformer_pos_encode": 4,
         "multi_res_in_delta_network": 6,
-        "voxel_size": 0.01
+        "voxel_size": 0.08,
+        "expand_to_dim": 64
     }
     
     first_iter = 0
@@ -69,7 +70,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     
     # speed up for SAM
     if dataset.speedup:
-        feature_in_dim = int(feature_out_dim/2)
+        # feature_in_dim = int(feature_out_dim/2)
+        feature_in_dim = int(feature_out_dim//8)
         cnn_decoder = CNN_decoder(feature_in_dim, feature_out_dim)
         cnn_decoder_optimizer = torch.optim.Adam(cnn_decoder.parameters(), lr=0.0001)
 
@@ -270,7 +272,7 @@ if __name__ == "__main__":
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 15_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[1, 7_000, 15_000, 30_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[1, 2000, 5000, 7_000, 15_000, 20_000, 30_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
